@@ -544,8 +544,8 @@ def create_multitrajectory_timelagged_dataset(
     t_now = t_now[valid]
     t_future = t_future[valid]
 
-    traj_ids = walker_t[valid]
-    indices_t = indices_t[valid]
+    traj_ids = walker_t[valid].to(dtype)
+    indices_t = indices_t[valid].to(dtype)
 
     if len(x_t) == 0:
         raise ValueError(
