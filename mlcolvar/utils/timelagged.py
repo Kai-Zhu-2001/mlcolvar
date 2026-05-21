@@ -22,7 +22,11 @@ try:
 except ImportError:
     TQDM_IS_INSTALLED = False
 
-__all__ = ["find_timelagged_configurations", "create_timelagged_dataset"]
+__all__ = [
+    "find_timelagged_configurations",
+    "create_timelagged_dataset",
+    "create_multitrajectory_timelagged_dataset",
+]
 
 
 def closest_idx(array, value):
@@ -418,6 +422,159 @@ def create_timelagged_dataset(
                 dataset['data_list_lag'][i]['weight'] = w_lag[i]
             
         return dataset
+    
+
+def create_multitrajectory_timelagged_dataset(
+    X: Union[torch.Tensor, np.ndarray],
+    t: torch.Tensor = None,
+    lag_time: float = 1,
+    walker: torch.Tensor = None,
+    dtype: torch.dtype = torch.float32,
+    return_time_index: bool = True,
+):
+    """
+    Construct time-lagged positive pairs from multiple short trajectories
+    according to walker IDs.
+
+    Positive pairs are built only within the same walker:
+        x_t and x_{t+lag_time}
+
+    Negative pairs are not explicitly constructed here.
+    They can be constructed in the contrastive loss by using walker/traj_id:
+        traj_id[i] != traj_id[j]
+
+    Parameters
+    ----------
+    X : torch.Tensor or np.ndarray
+        Concatenated trajectory data with shape [N, n_features].
+
+    t : array-like, optional
+        Time array with shape [N]. If None, t = torch.arange(N).
+
+    lag_time : float
+        Lag time in the same unit as t.
+
+    walker : array-like
+        Walker or trajectory ID for each frame, shape [N].
+        Pairs are only constructed when walker[i] == walker[i + lag_steps].
+
+    dtype : torch.dtype
+        Tensor dtype.
+
+    return_time_index : bool
+        Whether to include the frame index of x_t in the returned dataset.
+
+    Returns
+    -------
+    dataset : DictDataset
+        Dataset with keys:
+            data         : x_t
+            data_lag     : x_{t+lag_time}
+            traj_id      : walker ID of each pair
+            time_index   : frame index of x_t, optional
+            time         : physical time of x_t
+            time_lag     : physical time of x_{t+lag_time}
+            weights      : ones
+            weights_lag  : ones
+    """
+    if lag_time <= 0:
+        raise ValueError("lag_time must be positive.")
+
+    X = torch.as_tensor(X, dtype=dtype)
+
+    if X.ndim < 2:
+        raise ValueError(
+            f"X should have shape [N, n_features], but got {tuple(X.shape)}."
+        )
+
+    n_frames = len(X)
+
+    if t is None:
+        t = torch.arange(n_frames, dtype=dtype)
+    else:
+        t = torch.as_tensor(t, dtype=dtype)
+        if len(t) != n_frames:
+            raise ValueError(
+                f"The length of t ({len(t)}) is different from the length of X ({n_frames})."
+            )
+
+    if walker is None:
+        raise ValueError(
+            "walker must be provided to split the concatenated data into trajectories."
+        )
+
+    walker = torch.as_tensor(walker, dtype=torch.long)
+    if len(walker) != n_frames:
+        raise ValueError(
+            f"The length of walker ({len(walker)}) is different from the length of X ({n_frames})."
+        )
+
+    if n_frames < 2:
+        raise ValueError("X must contain at least two frames.")
+
+    dt = float(t[1] - t[0])
+    lag_steps = int(round(lag_time / dt))
+
+    if lag_steps < 1:
+        raise ValueError(
+            f"lag_time={lag_time} is too small. With dt={dt}, it gives lag_steps < 1."
+        )
+
+    if lag_steps >= n_frames:
+        raise ValueError("lag_time is too large for the provided data.")
+
+    # Candidate pairs by slicing
+    x_t = X[:-lag_steps]
+    x_lag = X[lag_steps:]
+
+    t_now = t[:-lag_steps]
+    t_future = t[lag_steps:]
+
+    walker_t = walker[:-lag_steps]
+    walker_lag = walker[lag_steps:]
+
+    indices_t = torch.arange(n_frames - lag_steps, dtype=torch.long)
+
+    # Keep only pairs within the same walker/trajectory
+    valid = walker_t == walker_lag
+
+    x_t = x_t[valid]
+    x_lag = x_lag[valid]
+
+    t_now = t_now[valid]
+    t_future = t_future[valid]
+
+    traj_ids = walker_t[valid]
+    indices_t = indices_t[valid]
+
+    if len(x_t) == 0:
+        raise ValueError(
+            "No valid time-lagged pairs were found. "
+            "Please check lag_time and walker segmentation."
+        )
+
+    weights = torch.ones(len(x_t), dtype=dtype)
+    weights_lag = torch.ones(len(x_lag), dtype=dtype)
+
+    dictionary = {
+        "data": x_t,
+        "data_lag": x_lag,
+        "traj_id": traj_ids,
+        "time": t_now,
+        "time_lag": t_future,
+        "weights": weights,
+        "weights_lag": weights_lag,
+    }
+
+    if return_time_index:
+        dictionary["time_index"] = indices_t
+
+    dataset = DictDataset(
+        dictionary,
+        data_type="descriptors",
+    )
+
+    return dataset
 
 
 def test_create_timelagged_dataset():
@@ -479,3 +636,42 @@ def test_create_timelagged_dataset():
         X, t, lag_time=lag_time, walker=walker
     )
     assert len(dataset) == n_points - 2 * lag_time
+
+
+def test_create_multitrajectory_timelagged_dataset():
+    """Test create_multitrajectory_timelagged_dataset."""
+
+    # two short trajectories concatenated together
+    X = torch.arange(20 * 2, dtype=torch.float32).reshape(20, 2)
+    t = torch.arange(20, dtype=torch.float32)
+    walker = torch.tensor([0] * 10 + [1] * 10)
+
+    dataset = create_multitrajectory_timelagged_dataset(
+        X,
+        t=t,
+        lag_time=3,
+        walker=walker,
+    )
+
+    # each walker has 10 frames, lag_time=3 -> 10 - 3 pairs per walker
+    assert len(dataset) == 14
+
+    # expected starting indices:
+    # walker 0: 0,1,2,3,4,5,6
+    # walker 1: 10,11,12,13,14,15,16
+    idx = torch.tensor(list(range(7)) + list(range(10, 17)))
+
+    assert torch.allclose(dataset["data"], X[idx])
+    assert torch.allclose(dataset["data_lag"], X[idx + 3])
+    assert torch.equal(dataset["traj_id"], walker[idx])
+    assert torch.equal(dataset["time_index"], idx)
+
+    # check that no pair crosses walker boundaries
+    assert torch.all(
+        walker[dataset["time_index"]]
+        == walker[dataset["time_index"] + 3]
+    )
+
+    # check weights
+    assert torch.allclose(dataset["weights"], torch.ones(len(dataset)))
+    assert torch.allclose(dataset["weights_lag"], torch.ones(len(dataset)))

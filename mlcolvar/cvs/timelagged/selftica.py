@@ -274,13 +274,17 @@ class SelfTICA(BaseCV):
         z_t_pred = self.predictor(z_t)
         z_lag = self.forward_nn(x_lag)
         # ===================loss=====================
-        loss = self.loss_fn(z_t_pred, z_lag)
+        # Optional trajectory/walker IDs.
+        # If present, ContrastiveLoss will use only cross-trajectory pairs as negatives.
+        traj_id = train_batch.get("traj_id", None)
+        loss = self.loss_fn(z_t_pred, z_lag, traj_id=traj_id)
         # ===================tica=====================
         with torch.no_grad():
-            loss_noreg = self.loss_fn.noreg(z_t_pred, z_lag)
+            loss_noreg = self.loss_fn.noreg(z_t_pred, z_lag, traj_id=traj_id)
             eigvals, _ = self.tica.compute(
                 data=[z_t, z_lag], weights=[w_t, w_lag], save_params=True
             )
+
             self.current_evecs = self.tica.evecs.clone()
             self.current_means = self.tica.mean.clone()
         # ====================log=====================

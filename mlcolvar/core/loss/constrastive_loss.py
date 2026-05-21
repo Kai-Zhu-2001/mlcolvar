@@ -49,6 +49,7 @@ class ContrastiveLoss(torch.nn.Module):
         self, 
         inputs: torch.Tensor, 
         lagged: torch.Tensor,
+        traj_id: torch.Tensor = None,
         remove_average: bool = True,
     ) -> torch.Tensor:
         """
@@ -72,6 +73,7 @@ class ContrastiveLoss(torch.nn.Module):
         return contrastive_loss(
             inputs,
             lagged,
+            traj_id=traj_id,
             reg=self.reg,
             mode=self.mode,
             remove_average=remove_average,
@@ -81,6 +83,7 @@ class ContrastiveLoss(torch.nn.Module):
         self, 
         inputs: torch.Tensor, 
         lagged: torch.Tensor,
+        traj_id: torch.Tensor = None,
         remove_average=True
     ) -> torch.Tensor:
         """
@@ -89,6 +92,7 @@ class ContrastiveLoss(torch.nn.Module):
         return contrastive_loss(
             inputs,
             lagged,
+            traj_id=traj_id,
             reg=0.0,
             mode=self.mode,
             remove_average=remove_average,
@@ -98,6 +102,7 @@ class ContrastiveLoss(torch.nn.Module):
 def contrastive_loss(
     x: torch.Tensor,
     y: torch.Tensor,
+    traj_id: torch.Tensor = None,
     mode: str = "l2",
     reg: float = 1e-5,
     remove_average: bool = True,
@@ -105,27 +110,28 @@ def contrastive_loss(
     """
     Compute the contrastive loss.
 
-    This function unifies the contrastive spectral objectives used in SelfTICA
-    and related methods. Depending on the chosen `mode`, it computes:
-
-    - L2 decorrelation loss (closely related to the VAMP-2 score)
-    - KL-based loss via Donsker-Varadhan bound
-    - KL-based loss via Nguyen-Wainwright-Jordan bound
-
-    Optionally, an L2 penalty on the feature norms can be added via `reg`.
+    If traj_id is None, all off-diagonal terms are used as negative pairs.
+    If traj_id is provided, only off-diagonal terms with different traj_id
+    are used as negative pairs.
 
     Parameters
     ----------
     x, y : torch.Tensor
         Input tensors of shape (n_samples, n_features), representing
-        configurations at time t and t+τ.
+        configurations at time t and t+tau.
+
+    traj_id : torch.Tensor, optional
+        Trajectory/walker ID for each sample. If provided, negative pairs are
+        constructed only between different trajectories.
+
     mode : str, optional
         Contrastive loss type: {"l2", "kl_DV", "kl_NWJ"}.
+
     reg : float, optional
         Regularization strength.
+
     remove_average : bool, optional
-        Whether to subtract the (weighted) mean from the input representations
-        before computing time-correlation matrices.
+        Whether to subtract the mean from the representations.
 
     Returns
     -------
@@ -139,39 +145,61 @@ def contrastive_loss(
 
     npts, dim = x.shape
     if npts < 2:
-        raise ValueError("Spectral loss requires at least 2 samples.")
-    
+        raise ValueError("Contrastive loss requires at least 2 samples.")
+
     # remove mean
     if remove_average:
         x = x - torch.mean(x, dim=0)
         y = y - torch.mean(y, dim=0)
 
-    # similarity matrix
+    # similarity matrix D_ij = <x_i, y_j>
     sim_mat = torch.matmul(x, y.T)
 
-    # remove diagonal terms (positive pairs)
-    sim_mat_nodiag = torch.triu(sim_mat, diagonal=1) + torch.tril(
-        sim_mat, diagonal=-1
-    )
-
-    # positive term
+    # positive term: diagonal matched pairs
     pos_term = torch.mean(x * y) * dim
 
-    # -------------------------
-    # Contrastive loss term
-    # -------------------------
+    # negative mask
+    eye = torch.eye(npts, dtype=torch.bool, device=x.device)
+
+    if traj_id is None:
+        # default: all off-diagonal terms are negatives
+        neg_mask = ~eye
+    else:
+        traj_id = torch.as_tensor(traj_id, device=x.device)
+
+        if traj_id.ndim != 1:
+            traj_id = traj_id.view(-1)
+
+        if traj_id.shape[0] != npts:
+            raise ValueError(
+                f"traj_id has length {traj_id.shape[0]}, but batch size is {npts}."
+            )
+
+        same_traj = traj_id[:, None] == traj_id[None, :]
+        neg_mask = (~same_traj) & (~eye)
+
+    if not torch.any(neg_mask):
+        raise ValueError(
+            "No valid negative pairs found. "
+            "If traj_id is provided, make sure each batch contains multiple trajectories."
+        )
+
+    sim_neg = sim_mat[neg_mask]
+    n_neg = sim_neg.numel()
+
+    # contrastive loss term
     if mode == "l2":
         diag = 2.0 * pos_term
-        neg_term = (sim_mat_nodiag**2).mean() * npts / (npts - 1)
+        neg_term = (sim_neg ** 2).mean()
         loss = neg_term - diag
 
     elif mode == "kl_DV":
-        log_term = torch.logsumexp(sim_mat_nodiag, dim=(0, 1))
-        log_term = log_term - math.log(npts * (npts - 1))
+        log_term = torch.logsumexp(sim_neg, dim=0)
+        log_term = log_term - math.log(n_neg)
         loss = log_term - pos_term
 
     elif mode == "kl_NWJ":
-        exp_term = (sim_mat_nodiag - 1.0).exp().mean() * npts / (npts - 1)
+        exp_term = (sim_neg - 1.0).exp().mean()
         loss = exp_term - pos_term
 
     else:
