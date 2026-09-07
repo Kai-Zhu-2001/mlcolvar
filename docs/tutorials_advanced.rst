@@ -5,9 +5,8 @@ Customizing CVs
    :maxdepth: 1
 
    notebooks/tutorials/adv_multitask.ipynb
+   notebooks/tutorials/adv_infinitesimal_generator.ipynb
    notebooks/tutorials/adv_newcv_scratch.ipynb
    notebooks/tutorials/adv_newcv_subclass.ipynb
    notebooks/tutorials/adv_preprocessing.ipynb
    notebooks/tutorials/adv_transforms.ipynb
-   notebooks/tutorials/adv_gnn_based_cvs.ipynb
-   notebooks/tutorials/adv_truncated_gnns.ipynb

@@ -2,7 +2,7 @@ import torch
 import lightning
 from mlcolvar.cvs import BaseCV
 from mlcolvar.core import FeedForward, BaseGNN, Normalization
-from mlcolvar.core.stats import TICA
+from mlcolvar.core.estimators import TICA
 from mlcolvar.core.loss import ContrastiveLoss
 from typing import Union, List
 
@@ -12,29 +12,32 @@ __all__ = ["SelfTICA"]
 class SelfTICA(BaseCV):
     """Self-supervised time-lagged independent component analysis (Self-TICA).
     
-    It is a self-supervised generalization of Deep-TICA in which uses a encoder
-    to learn a latent representation of the input data. TICA is then applied to
-    this latent space to extract the slowest modes of the CV.
+    It is a self-supervised generalization of Deep-TICA in which an encoder is used
+    to learn a latent representation of the input data using contrastive learning. 
+    TICA is then applied to this latent space to extract the slowest modes of the CV.
 
-    **Data**: for training it requires a DictDataset with the keys 'data' (input at time t)
-    and 'data_lag' (input at time t+lag), as well as the corresponding 'weights' and
-    'weights_lag' which will be used to weight the time correlation functions.
-    This can be created with the helper function `create_timelagged_dataset`.
+    **Data**: for training it requires a DictDataset containing:
+        - If using descriptors as input, the keys 'data' (input at time t)
+        and 'data_lag' (input at time t+lag), as well as the corresponding 'weights' and
+        'weights_lag' which will be used to weight the time correlation functions.
+        - If using graphs as input, the keys 'data_list' and 'data_list_lag', each containing the respective 'weight'
+    This can be created in both cases with the helper function `create_timelagged_dataset`.
 
-    **Loss** :L2 contrastive loss encourging temporal consistency and decorrelation (ContrastiveLoss)
+    **Loss** : L2 contrastive loss encouraging temporal consistency and decorrelation (ContrastiveLoss)
     The contrastive loss is related to the VAMP-2 score and can be interpreted as a self-supervised 
     approximation of time-lagged covariance maximization.
 
     References
     ----------
-    .. [1] Turri, G., Bonati, L., Zhu, K., Pontil, M., & Novelli, P, "Self-Supervised Evolution 
-        Operator Learning for High-Dimensional Dynamical Systems," arXiv preprint arXiv:2505.18671. (2025).
-    .. [2] L. Bonati, G. Piccini, and M. Parrinello, “ Deep learning the slow modes for
-        rare events sampling,” PNAS USA 118, e2113533118 (2021)
+    .. [1] Zhu, K., Zhang, J., Novelli, P., Hou, T., & Bonati, L., "Contrastive Learning of 
+    Dynamical Representations for Enhanced Molecular Sampling," arXiv preprint arXiv:2606.15495 (2026).
+    .. [2] Turri, G., Bonati, L., Zhu, K., Pontil, M., & Novelli, P, "Self-Supervised Evolution 
+        Operator Learning for High-Dimensional Dynamical Systems," International Conference on Learning 
+        Representations (ICLR), 2026.
 
     See also
     --------
-    mlcolvar.core.stats.TICA
+    mlcolvar.core.estimators.TICA
         Time Lagged Indipendent Component Analysis
     mlcolvar.core.loss.ContrastiveLoss
         Encourging temporal consistency and decorrelation
@@ -64,15 +67,15 @@ class SelfTICA(BaseCV):
         encoder_layers : list
             A list of integers specifying the number of neurons in each layer of the encoder network.
         n_cvs : int,
-            Number of cvs to optimize, default 1
+            Number of cvs to optimize, by default 1
         regularization : float, optional
-            L2 regularization strength used in the loss function (default: 1e-5).
+            L2 regularization strength used in the loss function, by default: 1e-5.
         predictor_depth : int, optional
             Length of the layer-size list used to build the predictor network.
             A value of 2 corresponds to a linear predictor, i.e.,
             ``FeedForward([d, d])`` where ``d`` is the latent dimension.
             Values larger than 2 add hidden layers of width ``d`` and therefore
-            define a nonlinear predictor. Default is 2.
+            define a nonlinear predictor, by default 2.
         options : dict[str, Any], optional
             Options for the building blocks of the model, by default {}. 
             Available blocks: ['norm_in', 'encoder', 'predictor', 'tica'].
@@ -338,7 +341,7 @@ def test_self_tica():
         # test TICA computation
         datamodule.setup()
 
-        eigvals, eigvecs = model.compute_tica(datamodule, lag_time=10)
+        eigvals, eigvecs = model.compute_tica(datamodule, lag_time=10, update_optimal=True)
         print("TICA eigenvalues:", eigvals)
 
         # trace model
@@ -378,7 +381,7 @@ def test_self_tica():
     # test TICA computation
     datamodule.setup()
 
-    eigvals, eigvecs = model.compute_tica(datamodule, lag_time=10)
+    eigvals, eigvecs = model.compute_tica(datamodule, lag_time=10, update_optimal=True)
     print("TICA eigenvalues:", eigvals)
 
     example_input_graph_test = create_test_graph_input(output_type='example', n_atoms=4, n_samples=3, n_states=2)
